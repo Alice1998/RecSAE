@@ -42,7 +42,17 @@ class SAE(nn.Module):
 		self.previous_activate_latents = None
 		self.epoch_activations = {"indices": None, "values": None} 
 
+		self.sae_baseline = args.sae_baseline
+		self.rec_model_activations = None
+
 		return
+	
+	def reset_module_weight(self):
+		self.encoder.reset_parameters()
+		shape = self.W_dec.shape
+		self.W_dec = nn.Parameter(torch.empty(shape, device=self.device))
+		shape = self.b_dec.shape
+		self.b_dec =  nn.Parameter(torch.empty(shape, device=self.device))
 
 	def get_dead_latent_ratio(self, need_update = 0):
 		ans =  1 - len(self.activate_latents)/self.hidden_dim
@@ -67,6 +77,7 @@ class SAE(nn.Module):
 		self.activate_latents.update(topk_indices.cpu().numpy().flatten())
 
 		if save_result:
+			# import ipdb;ipdb.set_trace()
 			if self.epoch_activations["indices"] is None:
 				self.epoch_activations["indices"] = topk_indices.detach().cpu().numpy()
 				self.epoch_activations["values"] = topk_values.detach().cpu().numpy()
@@ -80,6 +91,12 @@ class SAE(nn.Module):
 	
 
 	def forward(self, x, train_mode = False, save_result = False):
+		if self.sae_baseline:
+			if self.rec_model_activations is None:
+				self.rec_model_activations = x.detach().cpu().numpy()
+			else:
+				self.rec_model_activations = np.concatenate((self.rec_model_activations,x.detach().cpu().numpy()), axis = 0)
+
 		sae_in = x - self.b_dec
 		pre_acts = nn.functional.relu( self.encoder(sae_in) )
 		z = self.topk_activation(pre_acts, save_result = save_result)

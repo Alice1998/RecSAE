@@ -213,3 +213,150 @@ class InterestPredictor(nn.Module):
         unsort_idx = torch.topk(sort_idx, k=len(lengths), largest=False)[1]
         his_vector = hidden[-1].index_select(dim=0, index=unsort_idx)
         return his_vector
+
+
+TRAIN_MODE = 1
+INFERENCE_MODE = 0
+TEST_MODE = 2
+from models.sae.sae import SAE
+import pandas as pd
+
+class TiMiRec_SAE(TiMiRec):
+    reader = 'SeqReader'
+    runner = 'RecSAERunner'
+    sae_extra_params = ['sae_lr','sae_batch_size','sae_k','sae_scale_size']
+
+
+    @staticmethod
+    def parse_model_args(parser):
+        parser = SAE.parse_model_args(parser)
+        parser = TiMiRec.parse_model_args(parser)
+        return parser
+	
+    def __init__(self, args, corpus):
+        TiMiRec.__init__(self, args, corpus)
+        self.sae_module = SAE(args, self.emb_size)
+        self.mode = "" # train, inference
+        self.recsae_model_path = args.recsae_model_path
+
+        self.epoch_users = None
+        self.epoch_history_items = None
+        self.epoch_embedding = None
+        return
+    
+    def set_sae_mode(self, mode):
+        if mode == 'train':
+            self.mode = TRAIN_MODE
+        elif mode == 'inference':
+            self.mode = INFERENCE_MODE
+        elif mode == 'test':
+            self.mode = TEST_MODE
+        else:
+            raise ValueError(f"[SASRec-SAE] mode ERROR!!! mode = {mode}")
+        
+    def get_dead_latent_ratio(self):
+        return self.sae_module.get_dead_latent_ratio(need_update = self.mode)
+
+    def load_model(self, model_path=None):
+        if model_path is None:
+            model_path = self.model_path
+
+        if model_path == self.model_path:
+            state_dict = torch.load(model_path)
+            self.load_state_dict(state_dict, strict = False)
+            for name, param in self.named_parameters():
+                if name in state_dict:
+                    param.requires_grad = False
+        elif model_path == self.extractor_path:
+            if model_path is None:
+                model_path = self.model_path
+            model_dict = self.state_dict()
+            state_dict = torch.load(model_path)
+            exist_state_dict = {k: v for k, v in state_dict.items() if k in model_dict}
+            model_dict.update(exist_state_dict)
+            self.load_state_dict(model_dict)
+            # logging.info('Load model from ' + model_path)
+        else:
+            self.load_state_dict(torch.load(model_path))
+        logging.info('Load model from ' + model_path)
+
+    def forward(self, feed_dict):
+        self.check_list = []
+        i_ids = feed_dict['item_id']  # bsz, -1
+        history = feed_dict['history_items']  # bsz, max_his
+        lengths = feed_dict['lengths']  # bsz
+        batch_size, seq_len = history.shape
+
+        out_dict = dict()
+        prediction_sae = []
+        save_result_flag = {INFERENCE_MODE:False, TEST_MODE:True}
+
+        if self.stage == 'pretrain':  # pretrain extractor
+            interest_vectors = self.interest_extractor(history, lengths)  # bsz, K, emb
+            i_vectors = self.interest_extractor.i_embeddings(i_ids)
+            if feed_dict['phase'] == 'train':
+                target_vector = i_vectors[:, 0]  # bsz, emb
+                target_intent = (interest_vectors * target_vector[:, None, :]).sum(-1)  # bsz, K
+                idx_select = target_intent.max(-1)[1]  # bsz
+                user_vector = interest_vectors[torch.arange(batch_size), idx_select, :]  # bsz, emb
+                prediction = (user_vector[:, None, :] * i_vectors).sum(-1)
+            else:
+                prediction = (interest_vectors[:, None, :, :] * i_vectors[:, :, None, :]).sum(-1)  # bsz, -1, K
+                prediction = prediction.max(-1)[0]  # bsz, -1
+        else:  # finetune
+            interest_vectors = self.interest_extractor(history, lengths)  # bsz, K, emb
+            i_vectors = self.interest_extractor.i_embeddings(i_ids)
+            his_vector = self.interest_predictor(history, lengths)
+            pred_intent = self.proj(his_vector)  # bsz, K
+            if feed_dict['phase'] == 'train':
+                target_vector = i_vectors[:, 0]  # bsz, emb
+                target_intent = self.similarity(interest_vectors, target_vector.unsqueeze(1))  # bsz, K
+                out_dict['pred_intent'] = pred_intent
+                out_dict['target_intent'] = target_intent
+                self.check_list.append(('pred_intent', pred_intent.softmax(-1)))
+                self.check_list.append(('target_intent', target_intent.softmax(-1)))
+            user_vector = (interest_vectors * pred_intent.softmax(-1)[:, :, None]).sum(-2)  # bsz, emb
+            
+            if self.mode == INFERENCE_MODE or self.mode == TEST_MODE:
+                sae_output = self.sae_module(user_vector, save_result = save_result_flag[self.mode])
+                if self.mode == TEST_MODE:
+                    if self.epoch_users is None:
+                        self.epoch_users = feed_dict['user_id'].detach().cpu().numpy()
+                        self.epoch_history_items = history.detach().cpu().numpy()
+                        self.epoch_embedding = user_vector.detach().cpu().numpy()
+                    else:
+                        self.epoch_users = np.concatenate((self.epoch_users, feed_dict['user_id'].detach().cpu().numpy()), axis=0)
+                        self.epoch_history_items = np.concatenate((self.epoch_history_items, history.detach().cpu().numpy()), axis=0)
+                        self.epoch_embedding = np.concatenate((self.epoch_embedding, user_vector.detach().cpu().numpy()), axis=0)
+            elif self.mode == TRAIN_MODE:
+                sae_output = self.sae_module(user_vector, train_mode = True)
+            else:
+                raise ValueError('[SASRec_SAE-SAE] Undefined mode: {}.'.format(self.mode))
+            prediction_sae = (sae_output[:, None, :] * i_vectors).sum(-1)
+            out_dict['prediction_sae'] =  prediction_sae.view(batch_size, -1)
+            prediction = (user_vector[:, None, :] * i_vectors).sum(-1)
+        out_dict['prediction'] = prediction.view(batch_size, -1)
+
+        return out_dict
+
+    def save_epoch_result(self, dataset, path = None, emb_path = None):
+        # import ipdb;ipdb.set_trace()
+        self.sae_module.epoch_activations['user_id'] = self.epoch_users
+        self.sae_module.epoch_activations['history'] = self.epoch_history_items
+        df = pd.DataFrame()
+        df['user_id'] = self.epoch_users
+        df['history'] = [np.trim_zeros(row, 'b').tolist() for row in self.epoch_history_items]
+        df['indices'] = [x.tolist() for x in self.sae_module.epoch_activations['indices']]
+        df['values'] =[x.tolist() for x in self.sae_module.epoch_activations['values']]
+        df.to_csv(path,sep = "\t",index=False)
+        # with open(path,'w') as f:
+        # 	f.write(json.dumps(self.sae_module.epoch_activations))
+        
+        np.save(emb_path, self.epoch_embedding)
+        logging.info('save emb to '+ emb_path)
+
+        self.sae_module.epoch_activations = {"indices": None, "values": None} 
+        self.epoch_users = None
+        self.epoch_history_items = None
+        self.epoch_embedding = None
+        return

@@ -62,17 +62,43 @@ def train_sae(args, model, runner, data_dict):
 def test_sae(args, model, runner, data_dict):
 	model.load_model(args.recsae_model_path)
 
-	eval_res = runner.print_res(data_dict['dev'], prediction_label = 'prediction_sae')
-	logging.info(os.linesep + 'Dev  After Training: ' + eval_res)
-	eval_res = runner.print_res(data_dict['test'], prediction_label = 'prediction_sae',save_result = True)
+	if args.probe_position == 'emb':
+		runner.prediction_embedding(data_dict)
+		eval_res = runner.print_res(data_dict['test'], prediction_label = 'prediction_sae',save_result = False)
+	else:
+		eval_res = runner.print_res(data_dict['test'], prediction_label = 'prediction_sae',save_result = True)
+	# eval_res = runner.print_res(data_dict['dev'], prediction_label = 'prediction_sae')
+	# logging.info(os.linesep + 'Dev  After Training: ' + eval_res)
+	
 	logging.info(os.linesep + 'Test After Training: ' + eval_res)
 
 	# torch.save(model, args.recsae_model_path+"h")
 	
 	if args.save_final_results==1: # save the prediction results
 		# save_rec_results(data_dict['dev'], runner, 100)
-		save_rec_results(data_dict['test'], runner, 100)
+		save_rec_results(data_dict['test'], runner, 100, predict_label = "prediction_sae")
 	
+def sae_baseline(args, model, runner, data_dict):
+	model.load_model(args.recsae_model_path)
+	model.sae_module.reset_module_weight()
+
+	if args.probe_position == 'emb':
+		runner.prediction_embedding(data_dict)
+		eval_res = runner.print_res(data_dict['test'], prediction_label = 'prediction_sae',save_result = False)
+	else:
+		eval_res = runner.print_res(data_dict['test'], prediction_label = 'prediction_sae',save_result = True)
+	# eval_res = runner.print_res(data_dict['dev'], prediction_label = 'prediction_sae')
+	# logging.info(os.linesep + 'Dev  After Training: ' + eval_res)
+	
+	logging.info(os.linesep + 'Test After Training: ' + eval_res)
+
+	# torch.save(model, args.recsae_model_path+"h")
+	
+	if args.save_final_results==1: # save the prediction results
+		# save_rec_results(data_dict['dev'], runner, 100)
+		save_rec_results(data_dict['test'], runner, 100, predict_label = "prediction_sae", sae_baseline = 1)
+	
+	return
 
 def main():
 	logging.info('-' * 45 + ' BEGIN: ' + utils.get_time() + ' ' + '-' * 45)
@@ -114,17 +140,22 @@ def main():
 
 	runner = runner_name(args)
 
-	if args.sae_train:
+	if args.sae_baseline:
+		sae_baseline(args, model, runner, data_dict)
+	elif args.sae_train:
 		train_sae(args, model, runner, data_dict)
 	else:
 		test_sae(args, model, runner, data_dict)
 
 	
 
-def save_rec_results(dataset, runner, topk, predict_label = 'prediction_sae'):
+def save_rec_results(dataset, runner, topk, predict_label = 'prediction',sae_baseline = 0):
 	# model_name = '{0}{1}'.format(init_args.model_name,init_args.model_mode)
 	# result_path = os.path.join(runner.log_path,runner.save_appendix, 'rec-{}-{}.csv'.format(model_name,dataset.phase))
-	result_path = runner.result_data_path + '_prediction.csv'
+	if sae_baseline:
+		result_path = runner.result_data_path + '_prediction_baseline.csv'
+	else:
+		result_path = runner.result_data_path + '_prediction.csv'
 	utils.check_dir(result_path)
 
 	if init_args.model_mode == 'CTR': # CTR task 
@@ -190,7 +221,8 @@ if __name__ == '__main__':
 	
 	rec_model = init_args.model_name.split('_')[0]
 	# model_name = eval('{0}.{0}{1}'.format(init_args.model_name,init_args.model_mode))
-	model_name = eval('{0}.{1}{2}'.format(rec_model,init_args.model_name,init_args.model_mode))
+	# model_name = eval('{0}.{1}{2}'.format(rec_model,init_args.model_name,init_args.model_mode))
+	model_name = eval('{0}.{1}'.format(rec_model,init_args.model_name))
 	reader_name = eval('{0}.{0}'.format(model_name.reader))  # model chooses the reader
 	runner_name = eval('{0}.{0}'.format(model_name.runner))  # model chooses the runner
 
@@ -212,8 +244,8 @@ if __name__ == '__main__':
 		log_args.append(arg + '=' + str(eval('args.' + arg)))
 	log_file_name = '__'.join(log_args).replace(' ', '__')
 
-	log_args = [init_args.model_name+init_args.model_mode, args.dataset+args.data_appendix, str(args.random_seed)]
-	for arg in ['lr', 'l2'] + model_name.extra_log_args + model_name.sae_extra_params + ['batch_size']:
+	log_args = [init_args.model_name+init_args.model_mode+args.probe_position, args.dataset+args.data_appendix, str(args.random_seed)]
+	for arg in ['lr', 'l2'] + model_name.extra_log_args + model_name.sae_extra_params:
 		log_args.append(arg + '=' + str(eval('args.' + arg)))
 	log_file_name_all = '__'.join(log_args).replace(' ', '__')
 
@@ -225,6 +257,9 @@ if __name__ == '__main__':
 		args.recsae_model_path = '../model/{}/{}.pt'.format(init_args.model_name+init_args.model_mode, log_file_name_all)
 	if args.result_data_path == "":
 		args.result_data_path = '../log/{}/result_file/{}'.format(init_args.model_name+init_args.model_mode, log_file_name_all)
+		check_dir = "../log/{}/result_file/".format(init_args.model_name+init_args.model_mode)
+		if not os.path.exists(check_dir):
+			os.makedirs(check_dir)
 
 
 	utils.check_dir(args.log_file)

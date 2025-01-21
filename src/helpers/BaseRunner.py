@@ -236,10 +236,13 @@ class BaseRunner(object):
 		dl = DataLoader(dataset, batch_size=self.eval_batch_size, shuffle=False, num_workers=self.num_workers,
 						collate_fn=dataset.collate_batch, pin_memory=self.pin_memory)
 		for batch in tqdm(dl, leave=False, ncols=100, mininterval=1, desc='Predict'):
-			# import ipdb;ipdb.set_trace()
 			if hasattr(dataset.model,'inference'):
 				prediction = dataset.model.inference(utils.batch_to_gpu(batch, dataset.model.device))[prediction_label]
 			else:
+				if 'history_items' in batch.keys() and batch['history_items'].shape[1] != dataset.model.history_max:
+					padding_length =  dataset.model.history_max - batch['history_items'].shape[1]
+					batch['history_items'] =  torch.nn.functional.pad(batch['history_items'], (0, padding_length), "constant", 0)
+				
 				x = dataset.model(utils.batch_to_gpu(batch, dataset.model.device))
 				prediction = x[prediction_label]
 				if prediction_label == 'prediction_sae':
