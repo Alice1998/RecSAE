@@ -35,7 +35,7 @@ python main.py --model_name TiMiRec --dataset Grocery_and_Gourmet_Food --path '.
 # Dataset
 # Amazon: --dataset 'Grocery_and_Gourmet_Food' --path '../data'
 # MovieLens: --dataset 'ML_1MTOPK' --path '../data/MovieLens_1M'
-# LastFM: --dataset 'LastFM_8k' --path '../data'
+# LastFM: --dataset 'LastFM' --path '../data'
 
 
 # 2 construct concept descriptions and confidence score
