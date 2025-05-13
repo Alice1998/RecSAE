@@ -1,7 +1,5 @@
 # RecSAE
 
-RecSAE: Recommendation Model Interpretation with Sparse Autoencoder
-
 We use the [ReChorus](https://github.com/THUwangcy/ReChorus) framework as our code base and implement the SAE module upon it.
 
 
